@@ -1,0 +1,495 @@
+<html>
+
+<script src="blockly_compressed.js"></script>
+<script src="blocks_compressed.js"></script>
+<script src="javascript_compressed.js"></script>
+<script src="en.js"></script>
+<script src="acorn_interpreter.js"></script>
+<script src="wait_block.js"></script>
+
+
+<style>
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  #draw-div,
+  #blockly-div {
+    width: 100px;
+    height: 100px;
+    margin-left: 20px;
+    margin-right: 10px;
+    float: left;
+    margin-top: 50px;
+  }
+
+  .button-div {
+    float: right;
+    margin-top: 550px;
+    margin-right: 20px;
+    margin-bottom: 50px;
+  }
+
+  .button {
+    background-color: royalblue;
+    /* Green */
+    border: none;
+    color: white;
+    padding: 15px 32px;
+    text-align: center;
+    text-decoration: none;
+    display: inline-block;
+    font-size: 16px;
+  }
+
+  /****  Variables  ****/
+  /****  Base  ****/
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background: #efefef;
+    font-family: arial;
+    font-size: 18px;
+  }
+
+
+  .logodiv {
+    padding-left: 20px;
+    padding-top: 13px;
+    width: 100%;
+    height: 145px;
+    margin-left: 40%;
+  }
+
+  #sc2logo {
+    position: absolute;
+    top: 4px;
+    left: 16px;
+    padding-left: 20px;
+    padding-top: 13px;
+  }
+
+  #logo {
+    max-width: 265px;
+    max-height: 100%;
+    width: 100%;
+    height: 100%;
+  }
+</style>
+
+
+
+
+<div id="blockly-div" style="height: 480px; width: 600px;"></div>
+<div class="button-div">
+
+  <button class="button" onclick="runCode()">Run</button>
+</div>
+
+<body>
+  <div id="draw-div">
+    <canvas id="canvaspad" width="600" height="480" style="border:1px solid #030303; background: white;">
+      Your browser does not support the HTML5 canvas tag.</canvas>
+  </div>
+</body>
+
+<xml xmlns="https://developers.google.com/blockly/xml" id="workspaceBlocks" style="display: none"></xml>
+<xml xmlns="https://developers.google.com/blockly/xml" id="toolbox" style="display: none">
+  <category name="M">
+    <block type="wait_seconds"></block>
+    <block type="forward"></block>
+    <block type="backward"></block>
+    <block type="left"></block>
+    <block type="right"></block>
+    <block type="turnleft"></block>
+    <block type="turnright"></block>
+  </category>
+  <category name="E">
+    <block type="goa"></block>
+    <block type="gob"></block>
+    <block type="goc"></block>
+  </category>
+</xml>
+
+
+<script>
+
+  /* TODO: Change toolbox XML ID if necessary. Can export toolbox XML from Workspace Factory. */
+  var toolbox = document.getElementById("toolbox");
+
+  var options = {
+    toolbox: toolbox,
+    collapse: true,
+    comments: true,
+    disable: true,
+    maxBlocks: Infinity,
+    trashcan: true,
+    horizontalLayout: false,
+    toolboxPosition: 'start',
+    css: true,
+    media: 'https://blockly-demo.appspot.com/static/media/',
+    rtl: false,
+    scrollbars: true,
+    sounds: true,
+    oneBasedIndex: true
+  };
+
+  /* Inject your workspace */
+  var workspace = Blockly.inject('blockly-div', options);
+
+  /* Load Workspace Blocks from XML to workspace. Remove all code below if no blocks to load */
+
+  /* TODO: Change workspace blocks XML ID if necessary. Can export workspace blocks XML from Workspace Factory. */
+  var workspaceBlocks = document.getElementById("workspaceBlocks");
+
+  /* Load blocks to workspace. */
+  Blockly.Xml.domToWorkspace(workspaceBlocks, workspace);
+
+  // ////////////////////////////////////////////////
+  Blockly.JavaScript.addReservedWords('exit');
+
+  var outputArea = document.getElementById('output');
+  var myInterpreter = null;
+  var runner;
+
+  function initApi(interpreter, globalObject) {
+    // Add an API function for the alert() block, generated for "text_print" blocks.
+    var wrapper = function (text) {
+      text = text ? text.toString() : '';
+      outputArea.value = outputArea.value + '\n' + text;
+    };
+    interpreter.setProperty(globalObject, 'alert',
+      interpreter.createNativeFunction(wrapper));
+
+    // Add an API function for the prompt() block.
+    var wrapper = function (text) {
+      text = text ? text.toString() : '';
+      return interpreter.createPrimitive(prompt(text));
+    };
+    interpreter.setProperty(globalObject, 'prompt',
+      interpreter.createNativeFunction(wrapper));
+
+    // Add an API for the wait block.  See wait_block.js
+    initInterpreterWaitForSeconds(interpreter, globalObject);
+
+    // Add an API function for highlighting blocks.
+    var wrapper = function (id) {
+      id = id ? id.toString() : '';
+      return interpreter.createPrimitive(highlightBlock(id));
+    };
+    interpreter.setProperty(globalObject, 'highlightBlock',
+      interpreter.createNativeFunction(wrapper));
+  }
+
+  var highlightPause = false;
+  var latestCode = '';
+
+  function highlightBlock(id) {
+    workspace.highlightBlock(id);
+    highlightPause = true;
+  }
+
+  function resetStepUi(clearOutput) {
+    workspace.highlightBlock(null);
+    highlightPause = false;
+
+  }
+
+  function generateCodeAndLoadIntoInterpreter() {
+    // Generate JavaScript code and parse it.
+    Blockly.JavaScript.STATEMENT_PREFIX = 'highlightBlock(%1);\n';
+    Blockly.JavaScript.addReservedWords('highlightBlock');
+    latestCode = Blockly.JavaScript.workspaceToCode(workspace);
+
+    resetStepUi(true);
+  }
+
+  function resetInterpreter() {
+    myInterpreter = null;
+    if (runner) {
+      clearTimeout(runner);
+      runner = null;
+    }
+  }
+  function runCode() {
+    if (!myInterpreter) {
+      // First statement of this code.
+      // Clear the program output.
+
+      resetStepUi(true);
+      var code = Blockly.JavaScript.workspaceToCode(workspace);
+      // And then show generated code in an alert.
+      // In a timeout to allow the outputArea.value to reset first.
+      setTimeout(function () {
+        alert('Ready to execute the following code\n' +
+            '===================================\n' +
+            latestCode);
+
+        // Begin execution
+        highlightPause = false;
+        myInterpreter = new Interpreter(latestCode, initApi);
+        runner = function () {
+          if (myInterpreter) {
+            var hasMore = myInterpreter.run();
+            if (hasMore) {
+              // Execution is currently blocked by some async call.
+              // Try again later.
+              setTimeout(runner, 10);
+            } else {
+              // Program is complete.
+              resetInterpreter();
+              resetStepUi(false);
+            }
+          }
+        };
+        runner();
+      }, 1);
+      return;
+    }
+
+  }
+  // Load the interpreter now, and upon future changes.
+  // generateCodeAndLoadIntoInterpreter();
+  //   workspace.addChangeListener(function(event) {
+  //     if (!event.isUiEvent) {
+  //       // Something changed. Parser needs to be reloaded.
+  //       resetInterpreter();
+  //       generateCodeAndLoadIntoInterpreter();
+  //     }
+  //   });
+  function initInterpreterWaitForSeconds(interpreter, globalObject) {
+    // Ensure function name does not conflict with variable names.
+    Blockly.JavaScript.addReservedWords('waitForSeconds');
+
+    var wrapper = interpreter.createAsyncFunction(
+      function (timeInSeconds, callback) {
+        // Delay the call to the callback.
+        setTimeout(callback, timeInSeconds * 1000);
+      });
+    interpreter.setProperty(globalObject, 'waitForSeconds', wrapper);
+  }
+
+  //////////////////////////////////////////////////////
+  Blockly.defineBlocksWithJsonArray([{
+    "type": "wait_seconds",
+    "message0": " wait %1 seconds",
+    "args0": [{
+      "type": "field_number",
+      "name": "SECONDS",
+      "min": 0,
+      "max": 600,
+      "value": 1
+    }],
+    "previousStatement": null,
+    "nextStatement": null,
+    "colour": "%{BKY_LOOPS_HUE}"
+  }]);
+
+  /**
+   * Generator for wait block creates call to new method
+   * <code>waitForSeconds()</code>.
+   */
+  Blockly.JavaScript['wait_seconds'] = function (block) {
+    var seconds = Number(block.getFieldValue('SECONDS'));
+    var code = 'waitForSeconds(' + seconds + ');\n';
+    return code;
+  };
+
+  Blockly.Blocks['forward'] = {
+    init: function () {
+      this.appendDummyInput()
+        .appendField("Go forward for ");
+      this.appendDummyInput()
+        .appendField(new Blockly.FieldNumber(0, 0), "Time");
+      this.appendDummyInput()
+        .appendField("seconds");
+      this.setInputsInline(true);
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(30);
+      this.setTooltip("");
+      this.setHelpUrl("");
+    }
+  };
+
+
+  Blockly.JavaScript['forward'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var operator = Number(block.getFieldValue('Time'));
+    console.log("1");
+    // console.log(operator);
+    var code = 'waitForSeconds(' + operator + ');\n';
+    return code;
+  };
+
+  Blockly.Blocks['backward'] = {
+    init: function () {
+      this.appendDummyInput()
+        .appendField("Go backward for ");
+      this.appendDummyInput()
+        .appendField(new Blockly.FieldNumber(0, 0), "Time");
+      this.appendDummyInput()
+        .appendField("seconds");
+      this.setInputsInline(true);
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(30);
+      this.setTooltip("");
+      this.setHelpUrl("");
+    }
+  };
+
+  Blockly.JavaScript['backward'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var operator = Number(block.getFieldValue('Time'));
+
+    var code = 'waitForSeconds(' + operator + ');\n';
+    console.log("2");
+    return code;
+  };
+
+  Blockly.Blocks['left'] = {
+    init: function () {
+      this.appendDummyInput()
+        .appendField("Strafe left for ");
+      this.appendDummyInput()
+        .appendField(new Blockly.FieldNumber(0, 0), "Time");
+      this.appendDummyInput()
+        .appendField("seconds");
+      this.setInputsInline(true);
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(30);
+      this.setTooltip("");
+      this.setHelpUrl("");
+    }
+  };
+
+  Blockly.JavaScript['left'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var code = '...;\n';
+    return code;
+  };
+
+  Blockly.Blocks['right'] = {
+    init: function () {
+      this.appendDummyInput()
+        .appendField("Strafe right for ");
+      this.appendDummyInput()
+        .appendField(new Blockly.FieldNumber(0, 0), "Time");
+      this.appendDummyInput()
+        .appendField("seconds");
+      this.setInputsInline(true);
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(30);
+      this.setTooltip("");
+      this.setHelpUrl("");
+    }
+  };
+
+  Blockly.JavaScript['right'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var code = '...;\n';
+    return code;
+  };
+
+  Blockly.Blocks['turnleft'] = {
+    init: function () {
+      this.appendDummyInput()
+        .appendField("Turn left for ");
+      this.appendDummyInput()
+        .appendField(new Blockly.FieldNumber(0, 0), "Time");
+      this.appendDummyInput()
+        .appendField("seconds");
+      this.setInputsInline(true);
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(30);
+      this.setTooltip("");
+      this.setHelpUrl("");
+    }
+  };
+
+  Blockly.JavaScript['turnleft'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var code = '...;\n';
+    return code;
+  };
+
+  Blockly.Blocks['turnright'] = {
+    init: function () {
+      this.appendDummyInput()
+        .appendField("Turn right for ");
+      this.appendDummyInput()
+        .appendField(new Blockly.FieldNumber(0, 0), "Time");
+      this.appendDummyInput()
+        .appendField("seconds");
+      this.setInputsInline(true);
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(30);
+      this.setTooltip("");
+      this.setHelpUrl("");
+    }
+  };
+
+  Blockly.JavaScript['turnright'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var code = '...;\n';
+    return code;
+  };
+
+  Blockly.Blocks['goa'] = {
+    init: function () {
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(90);
+      this.setTooltip("Go to A");
+      this.setHelpUrl("");
+    }
+  };
+  Blockly.JavaScript['goa'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var code = '...;\n';
+    return code;
+  };
+
+  Blockly.Blocks['gob'] = {
+    init: function () {
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(90);
+      this.setTooltip("Go to B");
+      this.setHelpUrl("");
+    }
+  };
+  Blockly.JavaScript['gob'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var code = '...;\n';
+    return code;
+  };
+
+  Blockly.Blocks['goc'] = {
+    init: function () {
+      this.setPreviousStatement(true, null);
+      this.setNextStatement(true, null);
+      this.setColour(230);
+      this.setTooltip("Go to C");
+      this.setHelpUrl("");
+    }
+  };
+  Blockly.JavaScript['goc'] = function (block) {
+    // TODO: Assemble JavaScript into code variable.
+    var code = '...;\n';
+    return code;
+  };
+</script>
+
+</html>
